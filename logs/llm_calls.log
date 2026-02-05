@@ -1,0 +1,17 @@
+2026-02-03 10:48:02 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=did any neural network is used?
+2026-02-03 10:48:06 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=1124 | tokens_completion=47
+2026-02-03 11:27:14 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=did any neural network is used?
+2026-02-03 11:27:17 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=1124 | tokens_completion=39
+2026-02-03 11:55:31 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=what is the model used?
+2026-02-03 11:55:35 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=1099 | tokens_completion=25
+2026-02-03 11:59:05 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=what is the model used?
+2026-02-03 11:59:10 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=1099 | tokens_completion=22
+2026-02-03 14:24:03 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=what is the problem statement?
+2026-02-03 14:24:08 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=3706 | tokens_completion=43
+2026-02-03 14:24:36 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=what is the model used?
+2026-02-03 14:24:43 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=3706 | tokens_completion=60
+2026-02-04 09:47:09 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=explain it
+2026-02-04 09:47:19 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=3703 | tokens_completion=483
+2026-02-04 14:28:11 | INFO | Query reformulated | original=whatis the address of the applicant? | reformulated=What is the address of the applicant?
+2026-02-04 14:28:12 | INFO | LLM request | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | k=4 | query_preview=whatis the address of the applicant?
+2026-02-04 14:28:27 | INFO | LLM response | endpoint=https://sailanka-4210-resource.services.ai.azure.com | deployment=grok-3-mini | tokens_prompt=4444 | tokens_completion=58
