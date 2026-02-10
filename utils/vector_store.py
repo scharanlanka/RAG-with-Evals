@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import List
 import chromadb
 try:
@@ -74,11 +75,27 @@ class VectorStore:
     
     def add_documents(self, documents: List[Document]) -> None:
         """Add new documents to existing vector store."""
-        if self.vectorstore is None:
-            self.create_vectorstore(documents)
-        else:
-            self.vectorstore.add_documents(documents)
-            self.vectorstore.persist()
+        try:
+            if self.vectorstore is None:
+                self.create_vectorstore(documents)
+            else:
+                self.vectorstore.add_documents(documents)
+                self.vectorstore.persist()
+        except Exception as e:
+            if not self._is_sqlite_readonly_error(e):
+                raise
+            self._recover_after_readonly_error()
+            try:
+                if self.vectorstore is None:
+                    self.create_vectorstore(documents)
+                else:
+                    self.vectorstore.add_documents(documents)
+                    self.vectorstore.persist()
+            except Exception as retry_error:
+                if not self._is_sqlite_readonly_error(retry_error):
+                    raise
+                self._reset_persisted_store()
+                self.create_vectorstore(documents)
     
     def similarity_search(self, 
                          query: str, 
@@ -103,6 +120,40 @@ class VectorStore:
         if self.vectorstore is not None:
             self.vectorstore.delete_collection()
             self.vectorstore = None
+
+    def _is_sqlite_readonly_error(self, error: Exception) -> bool:
+        """Detect SQLite readonly/moved-db errors surfaced by Chroma."""
+        message = str(error).lower()
+        return (
+            "readonly" in message
+            or "code: 1032" in message
+            or "attempt to write a readonly database" in message
+        )
+
+    def _recover_after_readonly_error(self) -> None:
+        """Re-open Chroma to clear stale SQLite handles and restore writes."""
+        self.vectorstore = None
+        os.makedirs(self.persist_directory, exist_ok=True)
+        self._clear_chroma_system_cache()
+        self.load_vectorstore()
+
+    def _reset_persisted_store(self) -> None:
+        """Reset local Chroma files when DB becomes permanently readonly."""
+        self.vectorstore = None
+        self._clear_chroma_system_cache()
+        shutil.rmtree(self.persist_directory, ignore_errors=True)
+        os.makedirs(self.persist_directory, exist_ok=True)
+
+    def _clear_chroma_system_cache(self) -> None:
+        """Best-effort clear of Chroma's shared system cache across versions."""
+        try:
+            from chromadb.api.client import SharedSystemClient
+            clear_fn = getattr(SharedSystemClient, "clear_system_cache", None)
+            if callable(clear_fn):
+                clear_fn()
+        except Exception:
+            # Cache clear API is version-dependent; ignore when unavailable.
+            pass
     
     def get_collection_info(self) -> dict:
         """Get information about the collection."""
@@ -116,4 +167,3 @@ class VectorStore:
         except Exception as e:
 
             return {"status": f"Error: {str(e)}", "count": 0}
-

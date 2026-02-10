@@ -11,3 +11,5 @@ langchain-community
 langchain-openai
 langchain-text-splitters
 openai
+azure-ai-inference
+azure-core
