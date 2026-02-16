@@ -1,5 +1,9 @@
 import os
 import shutil
+import time
+import logging
+from pathlib import Path
+from collections import OrderedDict
 from typing import List
 import chromadb
 try:
@@ -29,9 +33,32 @@ class VectorStore:
         self.persist_directory = persist_directory
         self.embeddings = self._build_embeddings(embedding_model)
         self.vectorstore = None
+        self.logger = self._setup_logger()
+        self._query_embedding_cache: OrderedDict[str, List[float]] = OrderedDict()
+        self._query_embedding_cache_max = 128
         
         # Create directory if it doesn't exist
         os.makedirs(persist_directory, exist_ok=True)
+
+    def _setup_logger(self) -> logging.Logger:
+        """Create a file logger for retrieval timing diagnostics."""
+        root_dir = Path(__file__).resolve().parents[1]
+        log_dir = root_dir / "logs"
+        log_dir.mkdir(exist_ok=True)
+        log_path = log_dir / "retrieval_perf.log"
+
+        logger = logging.getLogger("retrieval_perf")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_path) for h in logger.handlers):
+            handler = logging.FileHandler(log_path, encoding="utf-8")
+            formatter = logging.Formatter(
+                "%(asctime)s | %(levelname)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        return logger
 
     def _build_embeddings(self, embedding_model: str):
         """Return an embedding model, preferring Azure OpenAI when configured."""
@@ -103,8 +130,53 @@ class VectorStore:
         """Perform similarity search and return relevant documents."""
         if self.vectorstore is None:
             return []
-        
-        return self.vectorstore.similarity_search(query, k=k)
+
+        normalized_query = " ".join((query or "").split())
+        cache_hit = normalized_query in self._query_embedding_cache
+        t_total_start = time.perf_counter()
+        t_embed = 0.0
+        t_search = 0.0
+
+        try:
+            if cache_hit:
+                query_embedding = self._query_embedding_cache[normalized_query]
+                self._query_embedding_cache.move_to_end(normalized_query)
+            else:
+                t0 = time.perf_counter()
+                query_embedding = self.embeddings.embed_query(normalized_query)
+                t_embed = time.perf_counter() - t0
+                self._query_embedding_cache[normalized_query] = query_embedding
+                if len(self._query_embedding_cache) > self._query_embedding_cache_max:
+                    self._query_embedding_cache.popitem(last=False)
+
+            t0 = time.perf_counter()
+            docs = self.vectorstore.similarity_search_by_vector(query_embedding, k=k)
+            t_search = time.perf_counter() - t0
+            self.logger.info(
+                "PERF retrieval | cache_hit=%s | embed=%.3fs | vector_search=%.3fs | total=%.3fs | k=%s | query_preview=%s",
+                cache_hit,
+                t_embed,
+                t_search,
+                time.perf_counter() - t_total_start,
+                k,
+                normalized_query[:160],
+            )
+            return docs
+        except Exception:
+            # Fallback path for vector store variants lacking similarity_search_by_vector.
+            t0 = time.perf_counter()
+            docs = self.vectorstore.similarity_search(normalized_query, k=k)
+            t_search = time.perf_counter() - t0
+            self.logger.info(
+                "PERF retrieval_fallback | cache_hit=%s | embed=%.3fs | search=%.3fs | total=%.3fs | k=%s | query_preview=%s",
+                cache_hit,
+                t_embed,
+                t_search,
+                time.perf_counter() - t_total_start,
+                k,
+                normalized_query[:160],
+            )
+            return docs
     
     def similarity_search_with_score(self, 
                                    query: str, 
@@ -117,9 +189,39 @@ class VectorStore:
     
     def delete_collection(self) -> None:
         """Delete the vector store collection."""
-        if self.vectorstore is not None:
+        if self.vectorstore is None:
+            return
+        try:
             self.vectorstore.delete_collection()
+        except Exception:
+            # Collection may already be missing/corrupt; continue with cleanup.
+            pass
+        finally:
             self.vectorstore = None
+
+    def clear_persisted_store(self) -> None:
+        """Completely remove persisted Chroma data from disk."""
+        self.vectorstore = None
+        self._clear_chroma_system_cache()
+        shutil.rmtree(self.persist_directory, ignore_errors=True)
+        os.makedirs(self.persist_directory, exist_ok=True)
+
+    def get_indexed_filenames(self) -> List[str]:
+        """Best-effort list of unique file names currently indexed."""
+        if self.vectorstore is None:
+            return []
+        try:
+            result = self.vectorstore._collection.get(include=["metadatas"])
+            names = set()
+            for metadata in result.get("metadatas", []) or []:
+                if not isinstance(metadata, dict):
+                    continue
+                filename = metadata.get("filename")
+                if filename:
+                    names.add(str(filename))
+            return sorted(names)
+        except Exception:
+            return []
 
     def _is_sqlite_readonly_error(self, error: Exception) -> bool:
         """Detect SQLite readonly/moved-db errors surfaced by Chroma."""

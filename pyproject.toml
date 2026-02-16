@@ -12,6 +12,7 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-openai>=1.1.7",
     "langchain-text-splitters>=1.1.0",
+    "langgraph>=0.6.7",
     "numpy>=2.4.2",
     "openai>=2.16.0",
     "pandas>=2.3.3",

@@ -91,7 +91,13 @@ APP_LOGGER = _setup_app_logger()
 
 
 def initialize_components():
-    if st.session_state.vectorstore is None:
+    vectorstore = st.session_state.vectorstore
+    needs_reinit = (
+        vectorstore is None
+        or not hasattr(vectorstore, "get_indexed_filenames")
+        or not hasattr(vectorstore, "clear_persisted_store")
+    )
+    if needs_reinit:
         st.session_state.vectorstore = VectorStore(
             embedding_model=Config.EMBEDDING_MODEL,
             persist_directory=Config.VECTOR_STORE_DIR
@@ -110,9 +116,37 @@ def has_persisted_documents() -> bool:
     if not os.path.isdir(Config.DATA_DIR):
         return False
     return any(
-        not name.startswith(".")
+        not name.startswith(".") and os.path.isfile(os.path.join(Config.DATA_DIR, name))
         for name in os.listdir(Config.DATA_DIR)
     )
+
+
+def list_persisted_documents() -> List[Dict[str, object]]:
+    """List local uploaded document files that are stored on disk."""
+    if not os.path.isdir(Config.DATA_DIR):
+        return []
+    files = []
+    for name in sorted(os.listdir(Config.DATA_DIR)):
+        if name.startswith("."):
+            continue
+        path = os.path.join(Config.DATA_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        files.append({
+            "name": name,
+            "path": path,
+            "size_bytes": os.path.getsize(path),
+        })
+    return files
+
+
+def _format_size(size_bytes: int) -> str:
+    """Human-readable file size."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def has_persisted_embeddings() -> bool:
@@ -164,6 +198,23 @@ def main():
             if st.button("Process & index", use_container_width=True):
                 process_documents(uploaded_files)
 
+        st.caption("Stored files")
+        persisted_files = list_persisted_documents()
+        if persisted_files:
+            for item in persisted_files:
+                st.write(f"- {item['name']} ({_format_size(item['size_bytes'])})")
+        elif st.session_state.vectorstore:
+            get_indexed = getattr(st.session_state.vectorstore, "get_indexed_filenames", None)
+            indexed_filenames = get_indexed() if callable(get_indexed) else []
+            if indexed_filenames:
+                st.write("No local files found. Indexed documents:")
+                for name in indexed_filenames:
+                    st.write(f"- {name}")
+            else:
+                st.write("No stored files yet.")
+        else:
+            st.write("No stored files yet.")
+
         if st.session_state.vectorstore:
             info = st.session_state.vectorstore.get_collection_info()
             st.caption(f"Collection: {info['status']} | Items: {info['count']}")
@@ -193,6 +244,15 @@ def render_chat_area():
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
                     if msg.get("role") == "assistant":
+                        if msg.get("retrieval_rankings"):
+                            with st.expander("Chunk Recall & Ranking", expanded=False):
+                                for item in msg["retrieval_rankings"]:
+                                    score = item.get("score")
+                                    score_txt = f"{score:.6f}" if isinstance(score, (int, float)) else "n/a"
+                                    label = f"#{item.get('rank', '?')} | score: {score_txt} | {item.get('filename', 'Unknown')}"
+                                    if item.get("page_range"):
+                                        label += f" ({item['page_range']})"
+                                    st.markdown(label)
                         if st.session_state.get("show_sources") and msg.get("sources"):
                             st.caption("Sources")
                             for i, src in enumerate(msg["sources"], 1):
@@ -200,6 +260,9 @@ def render_chat_area():
                                 if src.get("page_range"):
                                     label += f" ({src['page_range']})"
                                 st.write(label)
+                        if msg.get("retrieval_inspector_report"):
+                            with st.expander("Retrieval Inspector Agent", expanded=False):
+                                st.markdown(msg["retrieval_inspector_report"])
                         if st.session_state.get("show_context") and msg.get("context"):
                             st.caption("Retrieved context")
                             st.text_area("Context", msg["context"], height=160)
@@ -225,6 +288,10 @@ def normalize_history():
     converted = []
     for item in history:
         if isinstance(item, dict) and "role" in item and "content" in item:
+            if item.get("role") == "assistant" and "retrieval_inspector_report" not in item:
+                item["retrieval_inspector_report"] = ""
+            if item.get("role") == "assistant" and "retrieval_rankings" not in item:
+                item["retrieval_rankings"] = []
             converted.append(item)
             continue
         if isinstance(item, dict):
@@ -233,10 +300,21 @@ def normalize_history():
             answer = item.get("answer")
             sources = item.get("sources", [])
             context = item.get("context", "")
+            retrieval_inspector_report = item.get("retrieval_inspector_report", "")
+            retrieval_rankings = item.get("retrieval_rankings", [])
             if question:
                 converted.append({"role": "user", "content": question})
             if answer is not None:
-                converted.append({"role": "assistant", "content": answer, "sources": sources, "context": context})
+                converted.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "sources": sources,
+                        "context": context,
+                        "retrieval_inspector_report": retrieval_inspector_report,
+                        "retrieval_rankings": retrieval_rankings,
+                    }
+                )
     st.session_state.chat_history = converted
 
 
@@ -264,6 +342,8 @@ def handle_user_message(user_text: str):
             t_prepare = time.perf_counter() - t0
             sources = result.get("sources", [])
             context = result.get("context", "")
+            retrieval_inspector_report = ""
+            retrieval_rankings = result.get("retrieval_rankings", [])
             perf = result.get("perf", {}) if isinstance(result, dict) else {}
             if result.get("answer_stream") is not None:
                 thinking_placeholder.empty()
@@ -283,12 +363,23 @@ def handle_user_message(user_text: str):
                 answer = st.write_stream(ui_stream_wrapper())
                 if not isinstance(answer, str):
                     answer = str(answer)
+
+                inspector_state = st.session_state.rag_chain.run_retrieval_inspector(
+                    query=user_text,
+                    reformulated_query=result.get("reformulated_query", user_text),
+                    adversarial_queries=result.get("adversarial_queries", []),
+                    documents=result.get("documents", []),
+                    retrieval_rankings=result.get("retrieval_rankings", []),
+                    answer=answer,
+                )
+                retrieval_inspector_report = inspector_state.get("retrieval_inspector_report", "")
+                retrieval_rankings = inspector_state.get("retrieval_rankings", retrieval_rankings)
                 APP_LOGGER.info(
                     (
-                        "PERF ui_stream | REFORMULATING_QUERY=%.3fs | VECTOR_RETRIEVAL=%.3fs | "
+                        "PERF ui_stream | QUERY_AGENT=%.3fs | VECTOR_RETRIEVAL=%.3fs | "
                         "FIRST_TOKEN=%.3fs | LAST_TOKEN=%.3fs"
                     ),
-                    perf.get("reformulating_query_s", -1.0),
+                    perf.get("query_agent_s", perf.get("reformulating_query_s", -1.0)),
                     perf.get("vector_retrieval_s", -1.0),
                     first_token_s if first_token_s is not None else -1.0,
                     last_token_s if last_token_s is not None else -1.0,
@@ -297,6 +388,8 @@ def handle_user_message(user_text: str):
                 answer = result.get("answer", "")
                 thinking_placeholder.empty()
                 st.markdown(answer)
+                retrieval_inspector_report = result.get("retrieval_inspector_report", "")
+                retrieval_rankings = result.get("retrieval_rankings", [])
                 APP_LOGGER.info(
                     "PERF ui_non_stream | prepare=%.3fs | total=%.3fs | chars=%s | sources=%s",
                     t_prepare,
@@ -309,9 +402,20 @@ def handle_user_message(user_text: str):
             answer = f"Error generating answer: {e}"
             sources = []
             context = ""
+            retrieval_inspector_report = ""
+            retrieval_rankings = []
             st.markdown(answer)
             APP_LOGGER.exception("PERF ui_error | total=%.3fs", time.perf_counter() - t_total_start)
 
+        if retrieval_rankings:
+            with st.expander("Chunk Recall & Ranking", expanded=False):
+                for item in retrieval_rankings:
+                    score = item.get("score")
+                    score_txt = f"{score:.6f}" if isinstance(score, (int, float)) else "n/a"
+                    label = f"#{item.get('rank', '?')} | score: {score_txt} | {item.get('filename', 'Unknown')}"
+                    if item.get("page_range"):
+                        label += f" ({item['page_range']})"
+                    st.markdown(label)
         if st.session_state.get("show_sources") and sources:
             st.caption("Sources")
             for i, src in enumerate(sources, 1):
@@ -319,6 +423,9 @@ def handle_user_message(user_text: str):
                 if src.get("page_range"):
                     label += f" ({src['page_range']})"
                 st.write(label)
+        if retrieval_inspector_report:
+            with st.expander("Retrieval Inspector Agent", expanded=False):
+                st.markdown(retrieval_inspector_report)
         if st.session_state.get("show_context") and context:
             st.caption("Retrieved context")
             st.text_area("Context", context, height=160)
@@ -329,6 +436,8 @@ def handle_user_message(user_text: str):
             "content": answer,
             "sources": sources,
             "context": context,
+            "retrieval_inspector_report": retrieval_inspector_report,
+            "retrieval_rankings": retrieval_rankings,
         }
     )
     st.session_state.pending_question = None
@@ -344,7 +453,8 @@ def process_documents(uploaded_files):
             os.makedirs(Config.DATA_DIR, exist_ok=True)
             file_paths = []
             for uploaded_file in uploaded_files:
-                file_path = os.path.join(Config.DATA_DIR, uploaded_file.name)
+                safe_name = os.path.basename(uploaded_file.name)
+                file_path = os.path.join(Config.DATA_DIR, safe_name)
                 with open(file_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 file_paths.append(file_path)
@@ -391,7 +501,15 @@ def process_documents(uploaded_files):
 def clear_knowledge_base():
     """Clear local documents, embeddings, and chat history."""
     if st.session_state.vectorstore:
-        st.session_state.vectorstore.delete_collection()
+        clear_store = getattr(st.session_state.vectorstore, "clear_persisted_store", None)
+        if callable(clear_store):
+            clear_store()
+        else:
+            shutil.rmtree(Config.VECTOR_STORE_DIR, ignore_errors=True)
+            os.makedirs(Config.VECTOR_STORE_DIR, exist_ok=True)
+    else:
+        shutil.rmtree(Config.VECTOR_STORE_DIR, ignore_errors=True)
+        os.makedirs(Config.VECTOR_STORE_DIR, exist_ok=True)
     shutil.rmtree(Config.DATA_DIR, ignore_errors=True)
     os.makedirs(Config.DATA_DIR, exist_ok=True)
     st.session_state.vectorstore = None
