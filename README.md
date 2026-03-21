@@ -1,135 +1,218 @@
 # Agentic RAG with Retrieval Inspector
 
-Streamlit-based Retrieval-Augmented Generation (RAG) app with persistent ChromaDB storage, Azure OpenAI models, and LangGraph agent nodes.
+Enterprise-style multi-agent RAG system built with **LangGraph, Azure OpenAI, and ChromaDB**, featuring groundedness verification, retrieval diagnostics, and full observability into LLM outputs.
 
-It supports document upload/indexing, streaming answers, and an inspector workflow that evaluates chunk recall/ranking and answer groundedness.
+This project focuses on **GenAI reliability engineering** — ensuring answers are supported by retrieved context and providing transparency into retrieval quality.
 
-## Features
+---
 
-- Multi-format ingestion: PDF, DOCX, TXT
-- Persistent knowledge base:
-  - Uploaded files are stored in `data/documents/`
-  - Vector index is stored in `vectorstore/`
-- Agentic query flow (LangGraph):
-  - Query Agent node (query rewriting + adversarial variants)
-  - Main Answering Agent node (retrieval + response streaming)
-  - Retrieval Inspector Agent node (chunk ranking/recall + groundedness report)
-- Source attribution and retrieved-context display
-- Chunk recall and ranking dropdown in UI, including raw similarity scores
-- Retrieval diagnostics logs and performance logs
-- Clear Documents action removes both local files and vectorstore data
+## Key Capabilities
 
-## Current Agentic Flow
+**Multi-Agent Workflow (LangGraph)**
 
-1. User asks a question.
-2. Query Agent reformulates (when needed) and generates adversarial checks.
-3. Main Answering Agent retrieves ranked chunks and streams answer tokens.
-4. Retrieval Inspector Agent evaluates:
-   - chunk ranking quality
-   - recall gaps
-   - support of final answer by retrieved chunks
-   - groundedness verdict
-5. UI displays:
-   - answer
-   - sources
-   - `Chunk Recall & Ranking` dropdown
-   - `Retrieval Inspector Agent` dropdown
+* Query Agent: query rewriting and robustness checks
+* Answering Agent: semantic retrieval and streaming responses
+* Retrieval Inspector Agent: evaluates groundedness, recall, and ranking quality
+
+**Groundedness and Retrieval Evaluation**
+
+* Token-level answer support analysis
+* Chunk ranking and similarity score inspection
+* Best supporting chunk identification
+* Groundedness verdict and retrieval recommendations
+
+**Persistent Knowledge Base**
+
+* Multi-format ingestion: PDF, DOCX, TXT
+* Persistent ChromaDB vector store
+* Incremental indexing and retrieval
+
+**Observability and Diagnostics**
+
+* Retrieval performance logs
+* LLM telemetry tracking
+* Retrieval recall and ranking analysis
+
+---
+
+## Architecture
+
+```
+User Query
+   ↓
+Query Agent (rewrite & validate)
+   ↓
+Vector Retrieval (ChromaDB)
+   ↓
+Answering Agent (generate response)
+   ↓
+Retrieval Inspector Agent (groundedness & diagnostics)
+```
+
+---
 
 ## Tech Stack
 
-- Python 3.12+
-- Streamlit
-- LangChain + LangGraph
-- ChromaDB
-- Azure OpenAI / Azure AI Inference
-- PyPDF2, python-docx
+* Python
+* LangGraph, LangChain
+* Azure OpenAI
+* ChromaDB
+* FastAPI (backend API)
+* Next.js (frontend - planned)
 
-## Quick Start
+---
 
-1. Create and activate a virtual environment.
-2. Install dependencies.
-3. Add Azure environment variables.
-4. Run Streamlit.
+## Example Output
+
+Provides:
+
+* Answer with source attribution
+* Groundedness verdict (e.g., Strongly grounded)
+* Token coverage and ranking analysis
+* Retrieval diagnostics and recommendations
+
+---
+
+## Setup and Installation
+
+Follow these steps to run the project locally.
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/scharanlanka/RAG-with-Evals.git
+cd RAG-with-Evals
+```
+
+---
+
+### 2. Create and Activate Virtual Environment
+
+**Mac/Linux:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+**Windows:**
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
+.venv\Scripts\activate
 ```
 
-Open: `http://localhost:8501`
+---
 
-## Configuration
+### 3. Install Dependencies
 
-Set these in `.env`:
+Install all required packages:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+This installs core libraries including:
+
+* LangGraph
+* LangChain
+* Azure OpenAI SDK
+* ChromaDB
+* Streamlit
+* Document parsers
+
+---
+
+### 4. Configure Azure OpenAI Credentials
+
+Create a `.env` file in the project root:
 
 ```env
-AZURE_LLM_ENDPOINT=https://<your-llm-endpoint>
-AZURE_LLM_API_KEY=<your-llm-key>
-AZURE_LLM_DEPLOYMENT_NAME=<your-llm-deployment>
+AZURE_LLM_ENDPOINT=https://your-llm-endpoint.openai.azure.com/
+AZURE_LLM_API_KEY=your_llm_api_key
+AZURE_LLM_DEPLOYMENT_NAME=your_llm_deployment
 AZURE_LLM_API_VERSION=2024-05-01-preview
 
-AZURE_EMBEDDING_ENDPOINT=https://<your-embedding-endpoint>
-AZURE_EMBEDDING_API_KEY=<your-embedding-key>
-AZURE_EMBEDDING_DEPLOYMENT_NAME=<your-embedding-deployment>
+AZURE_EMBEDDING_ENDPOINT=https://your-embedding-endpoint.openai.azure.com/
+AZURE_EMBEDDING_API_KEY=your_embedding_api_key
+AZURE_EMBEDDING_DEPLOYMENT_NAME=your_embedding_deployment
 AZURE_EMBEDDING_API_VERSION=2023-05-15
+CHROMA_DISTANCE_METRIC=cosine
 ```
 
-Optional behavior defaults are in `config.py`:
+These credentials enable:
 
-- `PAGE_WINDOW`, `PAGE_OVERLAP`
-- `DATA_DIR`, `VECTOR_STORE_DIR`
-- fallback embedding model: `all-MiniLM-L6-v2`
+* LLM inference
+* Embedding generation
+* Retrieval pipeline
 
-## Project Structure
+---
 
-```text
-RAG-with-Evals/
-├── app.py
-├── config.py
-├── main.py
-├── README.md
-├── requirements.txt
-├── pyproject.toml
-├── data/
-│   └── documents/
-├── vectorstore/
-├── logs/
-│   ├── app_perf.log
-│   ├── llm_calls.log
-│   └── retrieval_perf.log
-└── utils/
-    ├── Agents.py
-    ├── document_processor.py
-    ├── rag_chain.py
-    ├── vector_store.py
-    └── __init__.py
+### 5. Run the Backend API
+
+Start the FastAPI server from the repo root:
+
+```bash
+uvicorn backend.main:app --reload --port 8002
 ```
 
-## Notes on Retrieval Scores
+---
 
-- `Chunk Recall & Ranking` shows raw similarity scores from vector retrieval.
-- Score interpretation can vary by backend/metric.
-- Inspector report combines model analysis with deterministic groundedness checks.
+### 6. API Endpoints
 
-## Logs
+Use:
 
-- `logs/app_perf.log`: UI timing (`QUERY_AGENT`, retrieval, token timings)
-- `logs/llm_calls.log`: LLM call-level telemetry
-- `logs/retrieval_perf.log`: retrieval breakdown (embedding vs vector search, cache hit)
+* `GET /health`
+* `GET /documents`
+* `POST /documents/upload`
+* `POST /chat`
+* `POST /chat/stream` (SSE)
+* `DELETE /knowledge-base`
 
-## Data Management
+---
 
-- Uploaded files persist across restarts in `data/documents/`.
-- Chroma vectors persist across restarts in `vectorstore/`.
-- `Clear documents` in UI deletes both persisted files and vector index.
+### 7. Current Scope
 
-## Dependencies
+Backend APIs are ready. Frontend implementation will be added in `frontend/` next.
 
-Core dependencies are listed in:
+---
 
-- `requirements.txt`
-- `pyproject.toml`
+### 8. Optional: Clear Indexed Data
 
-Includes: `langgraph`, `langchain`, `langchain-openai`, `chromadb`, `streamlit`, `azure-ai-inference`, `openai`, and parsing libraries.
+Use the **"Clear Documents"** button in the UI to remove:
+
+* Uploaded files
+* Vector database entries
+
+This resets the knowledge base.
+
+---
+
+### Troubleshooting
+
+If environment variables are not detected:
+
+```bash
+pip install python-dotenv
+```
+
+Ensure `.env` is in the project root directory.
+
+If you change `CHROMA_DISTANCE_METRIC` (for example from default `l2` to `cosine`), clear the existing `backend/vectorstore` data and re-index documents so Chroma rebuilds the collection with the new metric.
+
+
+---
+
+## Why This Project Matters
+
+Demonstrates production-relevant GenAI engineering skills:
+
+* Agentic AI orchestration
+* RAG system architecture
+* Retrieval reliability and explainability
+* Enterprise GenAI design patterns
+
+---
+
+GitHub: https://github.com/scharanlanka
+LinkedIn: https://linkedin.com/in/saicharanlanka
