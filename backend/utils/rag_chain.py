@@ -434,10 +434,15 @@ class RAGChain:
                 f"{row['filename']}{page_range}"
             )
 
-        best_txt = "n/a"
+        best_txt = "N/A"
         if best:
             best_page = f" ({best['page_range']})" if best.get("page_range") else ""
             best_txt = f"Rank {best['rank']} - {best['filename']}{best_page} ({best['overlap_ratio']:.1%} overlap)"
+
+        top_rank_support_txt = f"{weighted_support:.1%}"
+        if verdict in {"Partially grounded", "Weakly grounded"}:
+            top_rank_support_txt = "N/A"
+            best_txt = "N/A"
 
         recommendation = (
             "Increase `k` or adjust chunking/page window for better recall."
@@ -449,7 +454,7 @@ class RAGChain:
             "### Groundedness\n"
             f"- Verdict: **{verdict}**\n"
             f"- Answer token coverage by retrieved chunks: **{coverage:.1%}**\n"
-            f"- Weighted top-rank support: **{weighted_support:.1%}**\n"
+            f"- Weighted top-rank support: **{top_rank_support_txt}**\n"
             f"- Best supporting chunk: **{best_txt}**\n"
             f"- Recommendation: {recommendation}\n\n"
             "### Chunk Relevance\n"
