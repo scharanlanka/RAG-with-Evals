@@ -30,8 +30,50 @@ type Message = {
 };
 
 type Theme = "light" | "dark";
+type ChunkingMode = "page" | "recursive_char" | "recursive_token";
+type UploadChunkingOptions = {
+  chunkingMode: ChunkingMode;
+  pageWindow: number;
+  pageOverlap: number;
+  splitChunkSize: number;
+  splitChunkOverlap: number;
+};
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8002";
+const METRIC_DEFINITIONS = [
+  {
+    term: "Coverage",
+    definition: "Percent of answer tokens found across all retrieved chunks.",
+  },
+  {
+    term: "Support",
+    definition: "Weighted evidence strength, giving more importance to higher-ranked chunks.",
+  },
+  {
+    term: "Cos Similarity",
+    definition: "Vector similarity between query and chunk embedding (higher means semantically closer).",
+  },
+  {
+    term: "Overlap",
+    definition: "Lexical overlap between answer text and a retrieved chunk.",
+  },
+  {
+    term: "Relevance",
+    definition: "Bucketed label (High/Medium/Low) derived from similarity thresholds.",
+  },
+  {
+    term: "Token Coverage",
+    definition: "Same coverage metric shown in the groundedness panel.",
+  },
+  {
+    term: "Top-Rank Support",
+    definition: "Same support metric shown in the groundedness panel.",
+  },
+  {
+    term: "Best Supporting Chunk",
+    definition: "Highest-overlap chunk that best supports the answer.",
+  },
+];
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -102,6 +144,14 @@ export default function Page() {
   const [error, setError] = useState("");
   const [activeTabs, setActiveTabs] = useState<Record<string, InspectorTab>>({});
   const [expandedInspectors, setExpandedInspectors] = useState<Record<string, boolean>>({});
+  const [showMetricDefinitions, setShowMetricDefinitions] = useState(false);
+  const [showChunkingModal, setShowChunkingModal] = useState(false);
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [chunkingMode, setChunkingMode] = useState<ChunkingMode>("page");
+  const [pageWindow, setPageWindow] = useState(1);
+  const [pageOverlap, setPageOverlap] = useState(0);
+  const [splitChunkSize, setSplitChunkSize] = useState(900);
+  const [splitChunkOverlap, setSplitChunkOverlap] = useState(120);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const assistantCount = useMemo(
@@ -289,7 +339,7 @@ export default function Page() {
     }
   }
 
-  async function uploadDocuments(files: File[]) {
+  async function uploadDocuments(files: File[], options: UploadChunkingOptions) {
     if (files.length === 0 || isUploading) return;
     setError("");
     setIngestStatus("Indexing documents...");
@@ -300,6 +350,11 @@ export default function Page() {
       for (const file of files) {
         formData.append("files", file);
       }
+      formData.append("chunking_mode", options.chunkingMode);
+      formData.append("page_window", String(options.pageWindow));
+      formData.append("page_overlap", String(options.pageOverlap));
+      formData.append("split_chunk_size", String(options.splitChunkSize));
+      formData.append("split_chunk_overlap", String(options.splitChunkOverlap));
 
       const response = await fetch(`${API_BASE_URL}/documents/upload`, {
         method: "POST",
@@ -312,7 +367,13 @@ export default function Page() {
       }
 
       const chunks = payload?.chunks_indexed ?? 0;
-      setIngestStatus(`Indexed successfully. ${chunks} chunks ready.`);
+      const modeText =
+        options.chunkingMode === "page"
+          ? `page chunking (window=${options.pageWindow}, overlap=${options.pageOverlap})`
+          : options.chunkingMode === "recursive_char"
+            ? `recursive character splitter (size=${options.splitChunkSize}, overlap=${options.splitChunkOverlap})`
+            : `token splitter (size=${options.splitChunkSize}, overlap=${options.splitChunkOverlap})`;
+      setIngestStatus(`Indexed successfully. ${chunks} chunks ready using ${modeText}.`);
       await refreshKnowledgeBaseInfo();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed";
@@ -324,6 +385,41 @@ export default function Page() {
         fileInputRef.current.value = "";
       }
     }
+  }
+
+  function openChunkingPrompt(files: File[]) {
+    if (files.length === 0 || isUploading) return;
+    setError("");
+    setPendingUploadFiles(files);
+    setShowChunkingModal(true);
+  }
+
+  async function confirmChunkingAndUpload() {
+    if (pendingUploadFiles.length === 0 || isUploading) return;
+
+    const safePageWindow = Math.max(1, Math.floor(pageWindow || 1));
+    const safePageOverlap = Math.max(0, Math.floor(pageOverlap || 0));
+    const safeSplitChunkSize = Math.max(50, Math.floor(splitChunkSize || 900));
+    const safeSplitChunkOverlap = Math.max(0, Math.floor(splitChunkOverlap || 0));
+    if (safePageOverlap >= safePageWindow) {
+      setError("Page overlap must be smaller than page window.");
+      return;
+    }
+    if (safeSplitChunkOverlap >= safeSplitChunkSize) {
+      setError("Split chunk overlap must be smaller than split chunk size.");
+      return;
+    }
+
+    setShowChunkingModal(false);
+    const files = pendingUploadFiles;
+    setPendingUploadFiles([]);
+    await uploadDocuments(files, {
+      chunkingMode,
+      pageWindow: safePageWindow,
+      pageOverlap: safePageOverlap,
+      splitChunkSize: safeSplitChunkSize,
+      splitChunkOverlap: safeSplitChunkOverlap,
+    });
   }
 
   async function clearKnowledgeBase() {
@@ -430,7 +526,7 @@ export default function Page() {
               hidden
               multiple
               accept=".pdf,.docx,.txt"
-              onChange={(e) => void uploadDocuments(Array.from(e.target.files || []))}
+              onChange={(e) => openChunkingPrompt(Array.from(e.target.files || []))}
             />
             <button
               type="button"
@@ -455,8 +551,192 @@ export default function Page() {
             >
               {isClearing ? "Deleting..." : "Delete KB"}
             </button>
+            <button
+              type="button"
+              className="help-btn"
+              aria-label="Open metric definitions"
+              aria-expanded={showMetricDefinitions}
+              onClick={() => setShowMetricDefinitions((prev) => !prev)}
+            >
+              ?
+            </button>
           </div>
         </header>
+
+        {showMetricDefinitions && (
+          <div
+            className="metric-help-backdrop"
+            role="presentation"
+            onClick={() => setShowMetricDefinitions(false)}
+          >
+            <section
+              className="metric-help-card"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Retrieval metric definitions"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="metric-help-head">
+                <h3>Metric Definitions</h3>
+                <button
+                  type="button"
+                  className="metric-help-close"
+                  onClick={() => setShowMetricDefinitions(false)}
+                  aria-label="Close metric definitions"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="metric-help-list">
+                {METRIC_DEFINITIONS.map((item) => (
+                  <p key={item.term}>
+                    <strong>{item.term}:</strong> {item.definition}
+                  </p>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {showChunkingModal && (
+          <div
+            className="chunking-backdrop"
+            role="presentation"
+            onClick={() => {
+              setShowChunkingModal(false);
+              setPendingUploadFiles([]);
+              if (fileInputRef.current) fileInputRef.current.value = "";
+            }}
+          >
+            <section
+              className="chunking-card"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Choose chunking strategy"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="chunking-head">
+                <h3>Choose Chunking Strategy</h3>
+                <button
+                  type="button"
+                  className="chunking-close"
+                  onClick={() => {
+                    setShowChunkingModal(false);
+                    setPendingUploadFiles([]);
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                  aria-label="Close chunking selection"
+                >
+                  ×
+                </button>
+              </div>
+              <p className="chunking-subtitle">
+                {pendingUploadFiles.length} file{pendingUploadFiles.length === 1 ? "" : "s"} selected.
+              </p>
+
+              <div className="chunking-options">
+                <label className="chunking-option">
+                  <input
+                    type="radio"
+                    name="chunking-mode"
+                    checked={chunkingMode === "page"}
+                    onChange={() => setChunkingMode("page")}
+                  />
+                  <span>Page Chunking (shows page ranges in Sources)</span>
+                </label>
+                <label className="chunking-option">
+                  <input
+                    type="radio"
+                    name="chunking-mode"
+                    checked={chunkingMode === "recursive_char"}
+                    onChange={() => setChunkingMode("recursive_char")}
+                  />
+                  <span>Recursive Character Splitter</span>
+                </label>
+                <label className="chunking-option">
+                  <input
+                    type="radio"
+                    name="chunking-mode"
+                    checked={chunkingMode === "recursive_token"}
+                    onChange={() => setChunkingMode("recursive_token")}
+                  />
+                  <span>Token Text Splitter</span>
+                </label>
+              </div>
+
+              {chunkingMode === "page" ? (
+                <div className="chunking-grid">
+                  <label>
+                    Page Window
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={pageWindow}
+                      onChange={(e) => setPageWindow(Number(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Page Overlap
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={pageOverlap}
+                      onChange={(e) => setPageOverlap(Number(e.target.value))}
+                    />
+                  </label>
+                  <p className="chunking-note">
+                    Examples: 1/0 = page-by-page, 2/1 = 1-2, 2-3, 3-4, 3/2 = sliding 3-page chunks.
+                  </p>
+                </div>
+              ) : (
+                <div className="chunking-grid">
+                  <label>
+                    Chunk Size
+                    <input
+                      type="number"
+                      min={50}
+                      step={10}
+                      value={splitChunkSize}
+                      onChange={(e) => setSplitChunkSize(Number(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Chunk Overlap
+                    <input
+                      type="number"
+                      min={0}
+                      step={10}
+                      value={splitChunkOverlap}
+                      onChange={(e) => setSplitChunkOverlap(Number(e.target.value))}
+                    />
+                  </label>
+                  <p className="chunking-note">
+                    For recursive splitters, page ranges are hidden in Sources.
+                  </p>
+                </div>
+              )}
+
+              <div className="chunking-actions">
+                <button
+                  type="button"
+                  className="top-btn"
+                  onClick={() => {
+                    setShowChunkingModal(false);
+                    setPendingUploadFiles([]);
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="top-btn" onClick={() => void confirmChunkingAndUpload()}>
+                  Index documents
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
 
         <div className="conversation-body" role="log" aria-live="polite">
           {messages.length === 0 ? (

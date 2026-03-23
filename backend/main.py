@@ -3,7 +3,7 @@ import shutil
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.responses import StreamingResponse
@@ -114,8 +114,38 @@ def list_documents() -> Dict[str, Any]:
 
 
 @app.post("/documents/upload")
-async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def upload_documents(
+    files: List[UploadFile] = File(...),
+    chunking_mode: str = Form("page"),
+    page_window: int = Form(Config.PAGE_WINDOW),
+    page_overlap: int = Form(Config.PAGE_OVERLAP),
+    split_chunk_size: int = Form(900),
+    split_chunk_overlap: int = Form(120),
+) -> Dict[str, Any]:
     vectorstore, _ = _get_services()
+    mode = (chunking_mode or "page").strip().lower()
+    valid_modes = {"page", "recursive_char", "recursive_token"}
+    if mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid chunking_mode. Use one of: page, recursive_char, recursive_token."
+            ),
+        )
+    if page_window < 1:
+        raise HTTPException(status_code=400, detail="page_window must be >= 1.")
+    if page_overlap < 0:
+        raise HTTPException(status_code=400, detail="page_overlap must be >= 0.")
+    if split_chunk_size < 50:
+        raise HTTPException(status_code=400, detail="split_chunk_size must be >= 50.")
+    if split_chunk_overlap < 0:
+        raise HTTPException(status_code=400, detail="split_chunk_overlap must be >= 0.")
+    if split_chunk_overlap >= split_chunk_size:
+        raise HTTPException(
+            status_code=400,
+            detail="split_chunk_overlap must be smaller than split_chunk_size.",
+        )
+
     saved_paths: List[str] = []
     for upload in files:
         ext = os.path.splitext(upload.filename or "")[1].lower()
@@ -137,8 +167,11 @@ async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any
         saved_paths.append(file_path)
 
     processor = DocumentProcessor(
-        window_pages=Config.PAGE_WINDOW,
-        overlap_pages=Config.PAGE_OVERLAP,
+        chunking_mode=mode,
+        window_pages=page_window,
+        overlap_pages=page_overlap,
+        split_chunk_size=split_chunk_size,
+        split_chunk_overlap=split_chunk_overlap,
     )
     documents = processor.process_multiple_documents(saved_paths)
     if not documents:
@@ -148,6 +181,11 @@ async def upload_documents(files: List[UploadFile] = File(...)) -> Dict[str, Any
         "message": "Documents indexed successfully.",
         "files_saved": len(saved_paths),
         "chunks_indexed": len(documents),
+        "chunking_mode": mode,
+        "page_window": processor.window_pages if mode == "page" else None,
+        "page_overlap": processor.overlap_pages if mode == "page" else None,
+        "split_chunk_size": split_chunk_size if mode != "page" else None,
+        "split_chunk_overlap": split_chunk_overlap if mode != "page" else None,
     }
 
 

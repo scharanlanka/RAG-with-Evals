@@ -2,6 +2,7 @@ import os
 import PyPDF2
 import docx
 from typing import List
+from langchain_text_splitters import RecursiveCharacterTextSplitter, TokenTextSplitter
 
 try:
     # LangChain >= 0.2 style
@@ -11,9 +12,22 @@ except ImportError:
     from langchain.schema import Document
 
 class DocumentProcessor:
-    def __init__(self, window_pages: int = 2, overlap_pages: int = 1):
+    def __init__(
+        self,
+        *,
+        chunking_mode: str = "page",
+        window_pages: int = 2,
+        overlap_pages: int = 1,
+        split_chunk_size: int = 900,
+        split_chunk_overlap: int = 120,
+    ):
+        self.chunking_mode = (chunking_mode or "page").strip().lower()
+        if self.chunking_mode not in {"page", "recursive_char", "recursive_token"}:
+            raise ValueError(f"Unsupported chunking mode: {self.chunking_mode}")
         self.window_pages = max(window_pages, 1)
         self.overlap_pages = max(min(overlap_pages, self.window_pages - 1), 0)
+        self.split_chunk_size = max(split_chunk_size, 50)
+        self.split_chunk_overlap = max(min(split_chunk_overlap, self.split_chunk_size - 1), 0)
 
     def extract_pages_from_pdf(self, file_path: str) -> List[str]:
         """Extract text page-by-page from PDF."""
@@ -76,8 +90,28 @@ class DocumentProcessor:
                 break
         return docs
 
+    def recursive_split(self, text: str) -> List[str]:
+        """Split text with a recursive character or token splitter."""
+        if self.chunking_mode == "recursive_token":
+            try:
+                splitter = TokenTextSplitter(
+                    chunk_size=self.split_chunk_size,
+                    chunk_overlap=self.split_chunk_overlap,
+                )
+            except Exception:
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=self.split_chunk_size,
+                    chunk_overlap=self.split_chunk_overlap,
+                )
+        else:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.split_chunk_size,
+                chunk_overlap=self.split_chunk_overlap,
+            )
+        return splitter.split_text(text)
+
     def process_document(self, file_path: str) -> List[Document]:
-        """Process a document and return page-windowed documents."""
+        """Process a document and return chunks based on configured strategy."""
         file_extension = os.path.splitext(file_path)[1].lower()
 
         if file_extension == ".pdf":
@@ -92,11 +126,27 @@ class DocumentProcessor:
         if not any(p.strip() for p in pages):
             raise ValueError(f"No text extracted from {file_path}")
 
-        docs = self.page_windows(pages)
         filename = os.path.basename(file_path)
+        docs: List[Document]
+
+        if self.chunking_mode == "page":
+            docs = self.page_windows(pages)
+        else:
+            full_text = "\n\n".join([p.strip() for p in pages if p.strip()]).strip()
+            split_chunks = self.recursive_split(full_text)
+            docs = [
+                Document(
+                    page_content=chunk.strip(),
+                    metadata={},
+                )
+                for chunk in split_chunks
+                if chunk and chunk.strip()
+            ]
+
         for d in docs:
             d.metadata["source"] = file_path
             d.metadata["filename"] = filename
+            d.metadata["chunking_mode"] = self.chunking_mode
         return docs
 
     def process_multiple_documents(self, file_paths: List[str]) -> List[Document]:
