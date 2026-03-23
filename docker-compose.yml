@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: rag-backend
+    env_file:
+      - .env
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend/data:/app/backend/data
+      - ./backend/vectorstore:/app/backend/vectorstore
+      - ./backend/logs:/app/backend/logs
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: rag-frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8002
+    ports:
+      - "3002:3002"
+    depends_on:
+      - backend
+    restart: unless-stopped
