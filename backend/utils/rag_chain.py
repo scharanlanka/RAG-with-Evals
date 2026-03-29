@@ -3,6 +3,7 @@ import logging
 import time
 import re
 from pathlib import Path
+import math
 
 try:
     from langchain_core.documents import Document
@@ -10,6 +11,10 @@ except ImportError:
     from langchain.schema import Document
 
 from openai import AzureOpenAI
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
 
 try:
     from azure.ai.inference import ChatCompletionsClient
@@ -153,6 +158,27 @@ class RAGChain:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
         return logger
+
+    def estimate_text_tokens(self, text: str) -> int:
+        """Estimate token count for observability (exact when tiktoken is available)."""
+        if not text:
+            return 0
+        if tiktoken is not None:
+            try:
+                model_hint = (Config.AZURE_LLM_DEPLOYMENT_NAME or "").strip()
+                if model_hint:
+                    enc = tiktoken.encoding_for_model(model_hint)
+                else:
+                    enc = tiktoken.get_encoding("cl100k_base")
+                return len(enc.encode(text))
+            except Exception:
+                try:
+                    enc = tiktoken.get_encoding("cl100k_base")
+                    return len(enc.encode(text))
+                except Exception:
+                    pass
+        # Fallback heuristic: average 4 chars/token for English-like text.
+        return max(1, math.ceil(len(text) / 4))
 
     def _build_answer_graph(self):
         """Build LangGraph for Query Agent -> Main Answering Agent."""
@@ -532,14 +558,16 @@ class RAGChain:
             context = state.get("context", "")
 
             if state.get("answer") is not None:
+                answer_text = state.get("answer", "")
                 self.logger.info(
-                    "PERF stream_no_docs | query_agent=%.3fs | retrieve=%.3fs | total=%.3fs",
+                    "PERF stream_no_docs | query_agent=%.3fs | retrieve=%.3fs | output_tokens=%s | total=%.3fs",
                     perf.get("query_agent_s", 0.0),
                     perf.get("vector_retrieval_s", 0.0),
+                    self.estimate_text_tokens(answer_text),
                     time.perf_counter() - t_total_start,
                 )
                 return {
-                    "answer": state.get("answer", ""),
+                    "answer": answer_text,
                     "sources": [],
                     "context": "",
                     "query": query,
@@ -549,6 +577,10 @@ class RAGChain:
                     "perf": {
                         "query_agent_s": perf.get("query_agent_s", 0.0),
                         "vector_retrieval_s": perf.get("vector_retrieval_s", 0.0),
+                    },
+                    "generation_metrics": {
+                        "output_tokens_estimated": self.estimate_text_tokens(answer_text),
+                        "output_chars": len(answer_text),
                     },
                 }
 
@@ -642,6 +674,7 @@ class RAGChain:
             answer=answer_text,
         )
         inspector_report = inspector_state.get("retrieval_inspector_report", "")
+        output_tokens_estimated = self.estimate_text_tokens(answer_text)
         return {
             "answer": answer_text,
             "sources": result.get("sources", []),
@@ -651,6 +684,10 @@ class RAGChain:
             "adversarial_queries": result.get("adversarial_queries", []),
             "retrieval_rankings": inspector_state.get("retrieval_rankings", result.get("retrieval_rankings", [])),
             "retrieval_inspector_report": inspector_report,
+            "generation_metrics": {
+                "output_tokens_estimated": output_tokens_estimated,
+                "output_chars": len(answer_text),
+            },
         }
 
     def chat_with_context(self, query: str, chat_history: List[Dict] = None, k: int = 4) -> Dict[str, Any]:

@@ -20,6 +20,11 @@ type RetrievalRanking = {
   content_preview?: string;
 };
 
+type GenerationMetrics = {
+  output_tokens_estimated?: number;
+  output_chars?: number;
+};
+
 type Message = {
   id: string;
   role: Role;
@@ -27,6 +32,7 @@ type Message = {
   sources?: SourceItem[];
   retrievalRankings?: RetrievalRanking[];
   retrievalInspectorReport?: string;
+  generationMetrics?: GenerationMetrics;
 };
 
 type Theme = "light" | "dark";
@@ -72,6 +78,10 @@ const METRIC_DEFINITIONS = [
   {
     term: "Best Supporting Chunk",
     definition: "Highest-overlap chunk that best supports the answer.",
+  },
+  {
+    term: "Output Tokens (est.)",
+    definition: "Estimated number of LLM tokens generated in the final assistant answer.",
   },
 ];
 
@@ -302,6 +312,20 @@ export default function Page() {
                       typeof parsed.retrieval_inspector_report === "string"
                         ? parsed.retrieval_inspector_report
                         : "",
+                    generationMetrics:
+                      parsed.generation_metrics &&
+                      typeof parsed.generation_metrics === "object"
+                        ? {
+                            output_tokens_estimated:
+                              typeof parsed.generation_metrics.output_tokens_estimated === "number"
+                                ? parsed.generation_metrics.output_tokens_estimated
+                                : undefined,
+                            output_chars:
+                              typeof parsed.generation_metrics.output_chars === "number"
+                                ? parsed.generation_metrics.output_chars
+                                : undefined,
+                          }
+                        : undefined,
                   }
                 : m,
             ),
@@ -748,6 +772,8 @@ export default function Page() {
               const rankings = m.retrievalRankings || [];
               const sources = m.sources || [];
               const inspector = parseGroundedness(m.retrievalInspectorReport || "");
+              const outputTokens = m.generationMetrics?.output_tokens_estimated;
+              const outputChars = m.generationMetrics?.output_chars;
               const sourcesUnavailable =
                 /^partially grounded$/i.test(inspector.verdict) ||
                 /^weakly grounded$/i.test(inspector.verdict);
@@ -793,6 +819,9 @@ export default function Page() {
                               <p className="inspector-subtitle">
                                 {rankings.length} chunks retrieved · {uniqueSources} unique sources ·{" "}
                                 {inspector.coverage?.toFixed(1) ?? "0.0"}% coverage
+                                {typeof outputTokens === "number"
+                                  ? ` · ~${outputTokens} output tokens`
+                                  : ""}
                               </p>
                             </div>
 
@@ -941,6 +970,16 @@ export default function Page() {
                                     <strong>
                                       {displayBestRank ? `Rank ${displayBestRank}` : "N/A"}
                                     </strong>
+                                  </div>
+                                  <div className="metric-card">
+                                    <p>Output Tokens (est.)</p>
+                                    <strong>
+                                      {typeof outputTokens === "number" ? outputTokens : "N/A"}
+                                    </strong>
+                                  </div>
+                                  <div className="metric-card">
+                                    <p>Output Characters</p>
+                                    <strong>{typeof outputChars === "number" ? outputChars : "N/A"}</strong>
                                   </div>
                                   <div className="verdict-chip">{inspector.verdict}</div>
                                 </div>

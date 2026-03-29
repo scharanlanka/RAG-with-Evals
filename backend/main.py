@@ -55,6 +55,7 @@ class ChatResponse(BaseModel):
     adversarial_queries: List[str] = Field(default_factory=list)
     retrieval_rankings: List[Dict[str, Any]] = Field(default_factory=list)
     retrieval_inspector_report: str = ""
+    generation_metrics: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _sse_event(data: Dict[str, Any], event: Optional[str] = None) -> str:
@@ -210,6 +211,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         adversarial_queries=result.get("adversarial_queries", []),
         retrieval_rankings=result.get("retrieval_rankings", []),
         retrieval_inspector_report=result.get("retrieval_inspector_report", ""),
+        generation_metrics=result.get("generation_metrics", {}),
     )
 
 
@@ -242,6 +244,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "adversarial_queries": result.get("adversarial_queries", []),
                     "retrieval_rankings": result.get("retrieval_rankings", []),
                     "retrieval_inspector_report": result.get("retrieval_inspector_report", ""),
+                    "generation_metrics": result.get("generation_metrics", {}),
                 },
                 event="done",
             )
@@ -277,6 +280,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         "retrieval_rankings", result.get("retrieval_rankings", [])
                     ),
                     "retrieval_inspector_report": inspector_state.get("retrieval_inspector_report", ""),
+                    "generation_metrics": {
+                        "output_tokens_estimated": rag_chain.estimate_text_tokens(answer_text),
+                        "output_chars": len(answer_text),
+                    },
                 },
                 event="done",
             )
