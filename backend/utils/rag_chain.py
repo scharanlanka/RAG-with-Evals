@@ -300,13 +300,39 @@ class RAGChain:
             f"{lower}? Answer only if exact wording exists.",
         ]
 
-    def retrieve_documents(self, query: str, k: int = 4) -> List[Document]:
-        return self.vector_store.similarity_search(query, k=k)
+    def retrieve_documents(
+        self,
+        query: str,
+        k: int = 4,
+        hybrid_enabled: bool = False,
+        keyword_weight: float = 0.3,
+        semantic_weight: float = 0.7,
+    ) -> List[Document]:
+        return self.vector_store.similarity_search(
+            query,
+            k=k,
+            hybrid_enabled=hybrid_enabled,
+            keyword_weight=keyword_weight,
+            semantic_weight=semantic_weight,
+        )
 
-    def retrieve_documents_with_scores(self, query: str, k: int = 4) -> List[Any]:
+    def retrieve_documents_with_scores(
+        self,
+        query: str,
+        k: int = 4,
+        hybrid_enabled: bool = False,
+        keyword_weight: float = 0.3,
+        semantic_weight: float = 0.7,
+    ) -> List[Any]:
         """Retrieve ranked chunks with raw similarity scores when available."""
         try:
-            return self.vector_store.similarity_search_with_score(query, k=k)
+            return self.vector_store.similarity_search_with_score(
+                query,
+                k=k,
+                hybrid_enabled=hybrid_enabled,
+                keyword_weight=keyword_weight,
+                semantic_weight=semantic_weight,
+            )
         except Exception:
             return []
 
@@ -537,7 +563,13 @@ class RAGChain:
         return self.inspector_graph.invoke(state)
 
     def generate_answer_stream(
-        self, query: str, chat_history: Optional[List[Dict[str, str]]] = None, k: int = 4
+        self,
+        query: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        k: int = 4,
+        hybrid_enabled: bool = False,
+        keyword_weight: float = 0.3,
+        semantic_weight: float = 0.7,
     ) -> Dict[str, Any]:
         """Agentic flow: Query Agent -> Main Answering Agent (+ async Retrieval Inspector Agent)."""
         t_total_start = time.perf_counter()
@@ -547,6 +579,9 @@ class RAGChain:
                     "query": query,
                     "chat_history": chat_history or [],
                     "k": k,
+                    "hybrid_enabled": hybrid_enabled,
+                    "keyword_weight": keyword_weight,
+                    "semantic_weight": semantic_weight,
                     "perf": {},
                 }
             )
@@ -658,9 +693,24 @@ class RAGChain:
                 "reformulated_query": None,
             }
 
-    def generate_answer(self, query: str, chat_history: Optional[List[Dict[str, str]]] = None, k: int = 4) -> Dict[str, Any]:
+    def generate_answer(
+        self,
+        query: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        k: int = 4,
+        hybrid_enabled: bool = False,
+        keyword_weight: float = 0.3,
+        semantic_weight: float = 0.7,
+    ) -> Dict[str, Any]:
         """Non-stream helper that consumes the stream output for compatibility."""
-        result = self.generate_answer_stream(query, chat_history=chat_history, k=k)
+        result = self.generate_answer_stream(
+            query,
+            chat_history=chat_history,
+            k=k,
+            hybrid_enabled=hybrid_enabled,
+            keyword_weight=keyword_weight,
+            semantic_weight=semantic_weight,
+        )
         if result.get("answer") is not None:
             return result
         answer_text = "".join(token for token in result.get("answer_stream", []))

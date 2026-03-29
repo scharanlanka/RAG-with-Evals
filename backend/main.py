@@ -44,6 +44,9 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1)
     chat_history: List[Dict[str, str]] = Field(default_factory=list)
     k: int = Field(default=4, ge=1, le=20)
+    hybrid_enabled: bool = False
+    keyword_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    semantic_weight: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class ChatResponse(BaseModel):
@@ -201,6 +204,9 @@ def chat(request: ChatRequest) -> ChatResponse:
         request.query,
         chat_history=request.chat_history,
         k=request.k,
+        hybrid_enabled=request.hybrid_enabled,
+        keyword_weight=request.keyword_weight,
+        semantic_weight=request.semantic_weight,
     )
     return ChatResponse(
         answer=result.get("answer", ""),
@@ -226,6 +232,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         request.query,
         chat_history=request.chat_history,
         k=request.k,
+        hybrid_enabled=request.hybrid_enabled,
+        keyword_weight=request.keyword_weight,
+        semantic_weight=request.semantic_weight,
     )
 
     if result.get("answer") is not None:

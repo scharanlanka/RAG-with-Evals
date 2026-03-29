@@ -2,9 +2,12 @@ import os
 import shutil
 import time
 import logging
+import re
+import math
 from pathlib import Path
 from collections import OrderedDict
-from typing import List
+from collections import Counter
+from typing import List, Dict, Any, Tuple
 import chromadb
 try:
     from langchain_core.documents import Document
@@ -155,10 +158,20 @@ class VectorStore:
     
     def similarity_search(self, 
                          query: str, 
-                         k: int = 4) -> List[Document]:
+                         k: int = 4,
+                         hybrid_enabled: bool = False,
+                         keyword_weight: float = 0.3,
+                         semantic_weight: float = 0.7) -> List[Document]:
         """Perform similarity search and return relevant documents."""
         if self.vectorstore is None:
             return []
+        if hybrid_enabled:
+            return [doc for doc, _ in self.hybrid_search_with_score(
+                query,
+                k=k,
+                keyword_weight=keyword_weight,
+                semantic_weight=semantic_weight,
+            )]
 
         normalized_query = " ".join((query or "").split())
         cache_hit = normalized_query in self._query_embedding_cache
@@ -209,12 +222,159 @@ class VectorStore:
     
     def similarity_search_with_score(self, 
                                    query: str, 
-                                   k: int = 4) -> List[tuple]:
+                                   k: int = 4,
+                                   hybrid_enabled: bool = False,
+                                   keyword_weight: float = 0.3,
+                                   semantic_weight: float = 0.7) -> List[tuple]:
         """Perform similarity search with scores."""
         if self.vectorstore is None:
             return []
+        if hybrid_enabled:
+            return self.hybrid_search_with_score(
+                query,
+                k=k,
+                keyword_weight=keyword_weight,
+                semantic_weight=semantic_weight,
+            )
         
         return self.vectorstore.similarity_search_with_score(query, k=k)
+
+    def _normalize_hybrid_weights(
+        self,
+        keyword_weight: float,
+        semantic_weight: float,
+    ) -> Tuple[float, float]:
+        kw = max(0.0, float(keyword_weight))
+        sw = max(0.0, float(semantic_weight))
+        total = kw + sw
+        if total <= 0:
+            return 0.3, 0.7
+        return kw / total, sw / total
+
+    def _tokenize_bm25(self, text: str) -> List[str]:
+        return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+    def _build_bm25_scores(self, query: str, docs: List[str]) -> List[float]:
+        """Compute BM25 scores for all docs for a query."""
+        if not docs:
+            return []
+        query_terms = self._tokenize_bm25(query)
+        if not query_terms:
+            return [0.0 for _ in docs]
+
+        tokenized_docs = [self._tokenize_bm25(d) for d in docs]
+        doc_lens = [len(tokens) for tokens in tokenized_docs]
+        avg_dl = sum(doc_lens) / max(len(doc_lens), 1)
+        k1 = 1.5
+        b = 0.75
+
+        term_doc_freq: Dict[str, int] = {}
+        for term in set(query_terms):
+            df = 0
+            for tokens in tokenized_docs:
+                if term in tokens:
+                    df += 1
+            term_doc_freq[term] = df
+
+        n_docs = len(tokenized_docs)
+        scores: List[float] = []
+        for idx, tokens in enumerate(tokenized_docs):
+            tf = Counter(tokens)
+            dl = doc_lens[idx]
+            score = 0.0
+            for term in query_terms:
+                term_tf = tf.get(term, 0)
+                if term_tf == 0:
+                    continue
+                df = term_doc_freq.get(term, 0)
+                idf = math.log(1.0 + ((n_docs - df + 0.5) / (df + 0.5)))
+                denom = term_tf + k1 * (1.0 - b + b * (dl / max(avg_dl, 1e-9)))
+                score += idf * ((term_tf * (k1 + 1.0)) / max(denom, 1e-9))
+            scores.append(score)
+        return scores
+
+    def hybrid_search_with_score(
+        self,
+        query: str,
+        k: int = 4,
+        keyword_weight: float = 0.3,
+        semantic_weight: float = 0.7,
+    ) -> List[tuple]:
+        """Hybrid retrieval using BM25 keyword score + semantic similarity score."""
+        if self.vectorstore is None:
+            return []
+
+        t_total_start = time.perf_counter()
+        normalized_query = " ".join((query or "").split())
+        keyword_weight, semantic_weight = self._normalize_hybrid_weights(
+            keyword_weight,
+            semantic_weight,
+        )
+
+        try:
+            collection = self.vectorstore._collection
+            all_rows = collection.get(include=["documents", "metadatas"])
+            ids = list(all_rows.get("ids", []) or [])
+            texts = list(all_rows.get("documents", []) or [])
+            metadatas = list(all_rows.get("metadatas", []) or [])
+            if not ids or not texts:
+                return []
+
+            bm25_scores = self._build_bm25_scores(normalized_query, texts)
+            max_bm25 = max(bm25_scores) if bm25_scores else 0.0
+            bm25_norm = [
+                (score / max_bm25) if max_bm25 > 0 else 0.0 for score in bm25_scores
+            ]
+
+            # Semantic pool > k so hybrid can reshuffle based on BM25.
+            semantic_pool = min(max(k * 6, 20), len(ids))
+            semantic_rows = self.vectorstore.similarity_search_with_score(
+                normalized_query,
+                k=semantic_pool,
+            )
+            semantic_similarity_by_key: Dict[Tuple[str, str, str], float] = {}
+            for doc, score in semantic_rows:
+                filename = str(doc.metadata.get("filename", ""))
+                page_range = str(doc.metadata.get("page_range", ""))
+                content = str(doc.page_content)
+                # Chroma score is distance-like for cosine/l2 configs; convert to similarity.
+                sim = max(0.0, min(1.0, 1.0 - float(score)))
+                semantic_similarity_by_key[(filename, page_range, content)] = sim
+
+            fused: List[Tuple[Document, float, float, float]] = []
+            for idx, text in enumerate(texts):
+                metadata = metadatas[idx] if idx < len(metadatas) and isinstance(metadatas[idx], dict) else {}
+                filename = str(metadata.get("filename", ""))
+                page_range = str(metadata.get("page_range", ""))
+                sem = semantic_similarity_by_key.get((filename, page_range, str(text)), 0.0)
+                kw = bm25_norm[idx] if idx < len(bm25_norm) else 0.0
+                hybrid_similarity = (semantic_weight * sem) + (keyword_weight * kw)
+                doc = Document(page_content=str(text or ""), metadata=dict(metadata))
+                # Preserve UI assumption that score is "distance-like" and lower is better.
+                hybrid_distance = max(0.0, min(1.0, 1.0 - hybrid_similarity))
+                fused.append((doc, hybrid_distance, sem, kw))
+
+            fused.sort(key=lambda row: row[1])  # lowest distance (highest fused similarity) first
+            result = [(doc, score) for doc, score, _, _ in fused[:k]]
+            self.logger.info(
+                (
+                    "PERF retrieval_hybrid | bm25_weight=%.3f | semantic_weight=%.3f | "
+                    "docs=%s | total=%.3fs | k=%s | query_preview=%s"
+                ),
+                keyword_weight,
+                semantic_weight,
+                len(texts),
+                time.perf_counter() - t_total_start,
+                k,
+                normalized_query[:160],
+            )
+            return result
+        except Exception:
+            self.logger.exception(
+                "Hybrid retrieval failed, falling back to semantic search | query_preview=%s",
+                normalized_query[:160],
+            )
+            return self.vectorstore.similarity_search_with_score(normalized_query, k=k)
     
     def delete_collection(self) -> None:
         """Delete the vector store collection."""

@@ -155,6 +155,9 @@ export default function Page() {
   const [activeTabs, setActiveTabs] = useState<Record<string, InspectorTab>>({});
   const [expandedInspectors, setExpandedInspectors] = useState<Record<string, boolean>>({});
   const [showMetricDefinitions, setShowMetricDefinitions] = useState(false);
+  const [hybridEnabled, setHybridEnabled] = useState(false);
+  const [keywordWeight, setKeywordWeight] = useState(0.3);
+  const [semanticWeight, setSemanticWeight] = useState(0.7);
   const [showChunkingModal, setShowChunkingModal] = useState(false);
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
   const [chunkingMode, setChunkingMode] = useState<ChunkingMode>("page");
@@ -227,6 +230,22 @@ export default function Page() {
     }
 
     setError("");
+    if (hybridEnabled) {
+      if (
+        !Number.isFinite(keywordWeight) ||
+        !Number.isFinite(semanticWeight) ||
+        keywordWeight < 0 ||
+        semanticWeight < 0
+      ) {
+        setError("Hybrid weights must be valid non-negative numbers.");
+        return;
+      }
+      const total = keywordWeight + semanticWeight;
+      if (Math.abs(total - 1) > 0.001) {
+        setError("Hybrid weights must sum to 1.00 (example: 0.30 and 0.70).");
+        return;
+      }
+    }
     setIsStreaming(true);
 
     const userMsg: Message = {
@@ -252,6 +271,9 @@ export default function Page() {
           query: userMsg.content,
           chat_history: messages.map((m) => ({ role: m.role, content: m.content })),
           k: 4,
+          hybrid_enabled: hybridEnabled,
+          keyword_weight: keywordWeight,
+          semantic_weight: semanticWeight,
         }),
       });
 
@@ -520,6 +542,52 @@ export default function Page() {
             <span>Responses</span>
             <strong>{assistantCount}</strong>
           </div>
+        </section>
+
+        <section className="side-card muted">
+          <p className="side-title">Search Mode</p>
+          <label className="chunking-option">
+            <input
+              type="checkbox"
+              checked={hybridEnabled}
+              onChange={(e) => setHybridEnabled(e.target.checked)}
+              disabled={isStreaming}
+            />
+            <span>Enable Hybrid Retrieval (BM25 + Semantic)</span>
+          </label>
+          {hybridEnabled ? (
+            <div className="chunking-grid">
+              <label>
+                Keyword (BM25)
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={keywordWeight}
+                  onChange={(e) => setKeywordWeight(Number(e.target.value))}
+                  disabled={isStreaming}
+                />
+              </label>
+              <label>
+                Semantic
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={semanticWeight}
+                  onChange={(e) => setSemanticWeight(Number(e.target.value))}
+                  disabled={isStreaming}
+                />
+              </label>
+              <p className="chunking-note">
+                Weights must sum to 1.00 (for example: 0.30 BM25 and 0.70 semantic).
+              </p>
+            </div>
+          ) : (
+            <p className="side-empty">Semantic retrieval only</p>
+          )}
         </section>
 
         <section className="side-card muted">

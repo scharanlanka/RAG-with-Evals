@@ -14,6 +14,9 @@ class AgentState(TypedDict, total=False):
     query: str
     chat_history: List[Dict[str, str]]
     k: int
+    hybrid_enabled: bool
+    keyword_weight: float
+    semantic_weight: float
     reformulated_query: str
     adversarial_queries: List[str]
     documents: List[Document]
@@ -40,8 +43,8 @@ def build_agent_runnables(
     *,
     reformulate_query: Callable[[str, List[Dict[str, str]]], str],
     generate_adversarial_queries: Callable[[str], List[str]],
-    retrieve_documents: Callable[[str, int], List[Document]],
-    retrieve_documents_with_scores: Callable[[str, int], List[Any]],
+    retrieve_documents: Callable[[str, int, bool, float, float], List[Document]],
+    retrieve_documents_with_scores: Callable[[str, int, bool, float, float], List[Any]],
     format_context: Callable[[List[Document]], str],
     build_stream_response: Callable[[List[Dict[str, str]]], Any],
     inspect_retrieval: Callable[[AgentState], str],
@@ -65,11 +68,26 @@ def build_agent_runnables(
     def answer_agent_node(state: AgentState) -> AgentState:
         rewritten_query = state.get("reformulated_query") or state.get("query", "")
         k = state.get("k", 4)
+        hybrid_enabled = bool(state.get("hybrid_enabled", False))
+        keyword_weight = float(state.get("keyword_weight", 0.3))
+        semantic_weight = float(state.get("semantic_weight", 0.7))
         perf = dict(state.get("perf", {}))
 
         t0 = time.perf_counter()
-        ranked_docs = retrieve_documents_with_scores(rewritten_query, k)
-        documents: List[Document] = [doc for doc, _ in ranked_docs] if ranked_docs else retrieve_documents(rewritten_query, k)
+        ranked_docs = retrieve_documents_with_scores(
+            rewritten_query,
+            k,
+            hybrid_enabled,
+            keyword_weight,
+            semantic_weight,
+        )
+        documents: List[Document] = [doc for doc, _ in ranked_docs] if ranked_docs else retrieve_documents(
+            rewritten_query,
+            k,
+            hybrid_enabled,
+            keyword_weight,
+            semantic_weight,
+        )
         perf["vector_retrieval_s"] = time.perf_counter() - t0
 
         if not documents:
