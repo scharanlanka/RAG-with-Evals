@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "user" | "assistant";
 type InspectorTab = "retrieval" | "groundedness" | "sources";
@@ -138,6 +138,146 @@ function parseGroundedness(report: string) {
 
 function formatPercentMetric(value: number | null) {
   return typeof value === "number" ? `${value.toFixed(1)}%` : "N/A";
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string) {
+  const tokenRegex = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;
+  const nodes: ReactNode[] = [];
+  let lastIndex = 0;
+  let tokenIndex = 0;
+  let match = tokenRegex.exec(text);
+
+  while (match) {
+    const start = match.index;
+    const full = match[0];
+    if (start > lastIndex) {
+      nodes.push(text.slice(lastIndex, start));
+    }
+    if (full.startsWith("**") && full.endsWith("**")) {
+      nodes.push(
+        <strong key={`${keyPrefix}-b-${tokenIndex}`}>{full.slice(2, -2)}</strong>,
+      );
+    } else if (full.startsWith("`") && full.endsWith("`")) {
+      nodes.push(<code key={`${keyPrefix}-c-${tokenIndex}`}>{full.slice(1, -1)}</code>);
+    } else if (full.startsWith("*") && full.endsWith("*")) {
+      nodes.push(<em key={`${keyPrefix}-i-${tokenIndex}`}>{full.slice(1, -1)}</em>);
+    } else {
+      nodes.push(full);
+    }
+    lastIndex = start + full.length;
+    tokenIndex += 1;
+    match = tokenRegex.exec(text);
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function renderMarkdown(text: string) {
+  const content = (text || "").replace(/\r\n/g, "\n");
+  if (!content.trim()) return null;
+
+  const lines = content.split("\n");
+  const blocks: ReactNode[] = [];
+  let i = 0;
+  let blockIndex = 0;
+  const orderedPattern = /^\s*\d+\.\s+(.*)$/;
+  const unorderedPattern = /^\s*[-*+]\s+(.*)$/;
+
+  const isListLine = (line: string) => orderedPattern.test(line) || unorderedPattern.test(line);
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (!raw.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const orderedMatch = raw.match(orderedPattern);
+    if (orderedMatch) {
+      const items: string[] = [orderedMatch[1].trim()];
+      i += 1;
+      while (i < lines.length) {
+        const next = lines[i];
+        const nextOrdered = next.match(orderedPattern);
+        if (nextOrdered) {
+          items.push(nextOrdered[1].trim());
+          i += 1;
+          continue;
+        }
+        if (!next.trim()) break;
+        if (!isListLine(next) && items.length > 0) {
+          items[items.length - 1] = `${items[items.length - 1]} ${next.trim()}`;
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      blocks.push(
+        <ol key={`md-ol-${blockIndex}`}>
+          {items.map((item, idx) => (
+            <li key={`md-ol-item-${blockIndex}-${idx}`}>
+              {renderInlineMarkdown(item, `md-ol-inline-${blockIndex}-${idx}`)}
+            </li>
+          ))}
+        </ol>,
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const unorderedMatch = raw.match(unorderedPattern);
+    if (unorderedMatch) {
+      const items: string[] = [unorderedMatch[1].trim()];
+      i += 1;
+      while (i < lines.length) {
+        const next = lines[i];
+        const nextUnordered = next.match(unorderedPattern);
+        if (nextUnordered) {
+          items.push(nextUnordered[1].trim());
+          i += 1;
+          continue;
+        }
+        if (!next.trim()) break;
+        if (!isListLine(next) && items.length > 0) {
+          items[items.length - 1] = `${items[items.length - 1]} ${next.trim()}`;
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      blocks.push(
+        <ul key={`md-ul-${blockIndex}`}>
+          {items.map((item, idx) => (
+            <li key={`md-ul-item-${blockIndex}-${idx}`}>
+              {renderInlineMarkdown(item, `md-ul-inline-${blockIndex}-${idx}`)}
+            </li>
+          ))}
+        </ul>,
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const paragraph: string[] = [raw.trim()];
+    i += 1;
+    while (i < lines.length && lines[i].trim() && !isListLine(lines[i])) {
+      paragraph.push(lines[i].trim());
+      i += 1;
+    }
+    const paraText = paragraph.join(" ");
+    blocks.push(
+      <p key={`md-p-${blockIndex}`}>
+        {renderInlineMarkdown(paraText, `md-p-inline-${blockIndex}`)}
+      </p>,
+    );
+    blockIndex += 1;
+  }
+
+  return blocks;
 }
 
 export default function Page() {
@@ -865,7 +1005,9 @@ export default function Page() {
                   ) : (
                     <>
                       <div className="answer-card">
-                        <p>{m.content || (isStreaming ? "..." : "")}</p>
+                        <div className="answer-markdown">
+                          {renderMarkdown(m.content || (isStreaming ? "..." : ""))}
+                        </div>
                         {sources.length > 0 ? (
                           <p className="source-summary">
                             Summarized from {Array.from(new Set(sources.map((s) => s.filename || "Unknown"))).join(" • ")}
@@ -1097,7 +1239,7 @@ export default function Page() {
               disabled={isStreaming}
             />
             <button type="submit" disabled={isStreaming || !query.trim()}>
-              <Image src="/nextjs-icon.svg" alt="send" width={16} height={16} />
+              <Image src="/send-up-arrow.svg" alt="send" width={16} height={16} />
             </button>
           </form>
           {ingestStatus ? <p className="status">{ingestStatus}</p> : null}
